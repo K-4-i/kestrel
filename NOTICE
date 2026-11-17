@@ -1,0 +1,58 @@
+Kestrel
+Copyright 2026 Kestrel Contributors
+
+This product includes software derived from Herdr (herdr-app), originally
+developed by Can Çelik (ogulcancelik) and the Herdr Contributors
+(https://github.com/herdrdev/herdr-app):
+
+  Copyright 2025-2026 Can Çelik (ogulcancelik) and the Herdr Contributors
+  Licensed under the Apache License, Version 2.0.
+
+Kestrel connects to the herdr-core background terminal multiplexer engine
+(https://github.com/herdrdev/herdr-core), Copyright 2025-2026 Can Çelik and the
+Herdr Contributors, licensed under the Apache License, Version 2.0.
+
+-------------------------------------------------------------------------------
+Summary of Modifications (Apache License 2.0, Section 4(b))
+-------------------------------------------------------------------------------
+Kestrel customizes and extends upstream Herdr (herdr-app) with:
+- Kestrel desktop application branding, custom macOS .app bundle/icons, and
+  isolated `~/.config/kestrel` app home with automatic migration from
+  `~/.config/herdr-app` and `kestrel` / `kc` CLI aliases.
+- Outbound telemetry, feedback, update polling, and remote release-notes media
+  fetching disabled by default in local builds.
+- Google Antigravity (`agy`) & Vertex AI integration (`Settings -> Vertex AI`,
+  ADC / service-account environment injection, Model Garden presets, execution
+  mode cycling).
+- Multi-Agent Fleet Board (`defaults/mods/board`) and upgraded Agents sidebar
+  (`defaults/mods/agents`) with Central Pending Approvals supporting both
+  foreground confirmations (`Enter` / `a` / `Esc`) and Antigravity swarm
+  subagent approvals (`Ctrl+K` / `^K`).
+- Persistent Agent Session Recovery across macOS reboots (`savedSessions` &
+  `autoRestoreSessions` with 1-click `Restore All` / `agy -c` / `claude --continue`).
+- Artifacts, Rich Markdown & 2D Vector SVG Mermaid Studio (`defaults/mods/brain`
+  & `defaults/mods/files/doc-render.js`) rendering Antigravity artifacts, GitHub
+  callouts, carousels, images, side-by-side split previews, and 6 Mermaid diagram
+  types (`flowchart`/`graph`, `sequenceDiagram`, `stateDiagram-v2`, `classDiagram`,
+  `erDiagram`, `xychart-beta`).
+- Window-adaptive Top Bar & searchable Cross-Space Running Agents overflow
+  dropdown (`defaults/mods/tabs` & `defaults/mods/terminals-bar`).
+
+-------------------------------------------------------------------------------
+Third-Party Open-Source Software Credits
+-------------------------------------------------------------------------------
+Full license texts and package notices are provided in `THIRD-PARTY-NOTICES`
+and `LICENSE` (Apache-2.0). Major embedded components include:
+
+- GPUI (`vendor/gpui-*`): Copyright Zed Industries, Inc. (Apache-2.0)
+- gpui-kit (`vendor/gpui-kit`): Copyright Longbridge / gpui-component
+  Contributors (Apache-2.0)
+- Ghostty VT (`crates/ghostty-sys` / `libghostty-vt`): Copyright Mitchell
+  Hashimoto and Ghostty Contributors (MIT)
+- QuickJS & quickjs-jit (`vendor/quickjs-jit-runtime`): Copyright Fabrice
+  Bellard, Charlie Gordon, Rquickjs & Longbridge Contributors (MIT)
+- Taffy (`vendor/taffy`): Copyright DioxusLabs and Contributors (MIT)
+- xim-rs / xim-ctext (`vendor/zed-xim`, `vendor/xim-ctext`): Copyright Riey and
+  Zed Industries Contributors (MIT)
+- Icons & Fonts: Lucide Icons (ISC), Feather Icons (MIT), LobeHub Icons (MIT),
+  JetBrains Mono (OFL-1.1), Geist Sans (OFL-1.1).

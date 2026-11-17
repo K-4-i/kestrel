@@ -1,0 +1,66 @@
+#!/bin/bash
+# Modified by Kestrel Contributors (2026) from upstream Herdr (herdr-app, Apache-2.0). See NOTICE.
+#
+# Creates a macOS drag-to-Applications disk image (`Kestrel.dmg`) from `Kestrel.app`.
+# - Works out-of-the-box with ad-hoc signed builds (zero Apple Developer secrets needed)
+#   using built-in macOS `hdiutil` (or `create-dmg` if installed).
+# - Automatically signs & notarizes when APPLE_CERTIFICATE_P12 + APPLE_API_* secrets are set.
+set -euo pipefail
+
+app=${1:?usage: mac-dmg Kestrel.app output.dmg}
+out=${2:?usage: mac-dmg Kestrel.app output.dmg}
+[[ $(uname -s) == Darwin ]] || { echo 'mac-dmg requires macOS' >&2; exit 1; }
+[[ $(basename "$app") == Kestrel.app && -d $app ]] || { echo 'expected Kestrel.app directory' >&2; exit 1; }
+[[ $out == *.dmg ]] || { echo 'output must end with .dmg' >&2; exit 1; }
+rm -f "$out"
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+umask 022
+work=$(mktemp -d "${TMPDIR:-/tmp}/kestrel-dmg.XXXXXX")
+work=$(cd "$work" && pwd -P)
+cleanup() {
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+codesign --verify --deep --strict "$app"
+
+mkdir -p "$work/stage"
+ditto "$app" "$work/stage/Kestrel.app"
+cp "$root/LICENSE" "$root/NOTICE" "$root/THIRD-PARTY-NOTICES" "$work/stage/"
+
+if command -v create-dmg >/dev/null 2>&1 && [[ -f "$root/distribution/macos/dmg/background.png" ]]; then
+  mkdir -p "$work/app-only"
+  ditto "$app" "$work/app-only/Kestrel.app"
+  tiffutil -cathidpicheck "$root/distribution/macos/dmg/background.png" \
+    "$root/distribution/macos/dmg/background@2x.png" -out "$work/background.tiff"
+  create-dmg --volname Kestrel --volicon "$root/assets/icons/Kestrel.icns" \
+    --window-size 660 400 --background "$work/background.tiff" \
+    --icon-size 128 --icon Kestrel.app 165 190 --hide-extension Kestrel.app \
+    --app-drop-link 495 190 "$work/Kestrel.dmg" "$work/app-only" || {
+      # Headless CI fallback if Finder AppleScript times out
+      ln -sfn /Applications "$work/stage/Applications"
+      hdiutil create -volname "Kestrel" -srcfolder "$work/stage" -ov -format UDZO "$work/Kestrel.dmg"
+    }
+else
+  ln -sfn /Applications "$work/stage/Applications"
+  hdiutil create -volname "Kestrel" -srcfolder "$work/stage" -ov -format UDZO "$work/Kestrel.dmg"
+fi
+
+# Optional Developer ID signing + Apple Notarization if secrets are configured
+if [[ -n ${APPLE_CERTIFICATE_P12:-} && -n ${APPLE_CERTIFICATE_PASSWORD:-} ]]; then
+  "$root/scripts/mac-sign" "$work/Kestrel.dmg"
+  if [[ -n ${APPLE_API_KEY:-} && -n ${APPLE_API_KEY_ID:-} && -n ${APPLE_API_ISSUER:-} ]]; then
+    umask 077
+    printf '%s' "$APPLE_API_KEY" > "$work/key.p8"
+    auth=(--key "$work/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+    xcrun notarytool submit "$work/Kestrel.dmg" "${auth[@]}" --wait --timeout 30m --output-format json | tee "$work/submission.json"
+    jq -e '.status == "Accepted"' "$work/submission.json" >/dev/null
+    xcrun stapler staple "$work/Kestrel.dmg"
+    xcrun stapler validate "$work/Kestrel.dmg"
+  fi
+fi
+
+mkdir -p "$(dirname "$out")"
+mv "$work/Kestrel.dmg" "$out"
+echo "mac-dmg: $out"

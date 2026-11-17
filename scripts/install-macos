@@ -1,0 +1,94 @@
+#!/bin/bash
+# Modified by Kestrel Contributors (2026) from upstream Herdr (herdr-app, Apache-2.0). See NOTICE.
+#
+# One-command macOS bootstrapper & installer for Kestrel:
+#   1. Initializes vendor/ghostty submodule if needed
+#   2. Verifies Xcode CLT, Rust (cargo), and Zig 0.16
+#   3. Installs herdr-core (hc) into ~/.local/bin if not already installed
+#   4. Builds release Kestrel.app, bundles Apache-2.0 notices, signs & links CLI (`kestrel`, `kc`)
+set -euo pipefail
+
+[[ $(uname -s) == Darwin ]] || { echo 'This installer requires macOS.' >&2; exit 1; }
+cd "$(dirname "$0")/.."
+
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# 1. Submodules (vendor/ghostty)
+if [[ ! -f vendor/ghostty/build.zig ]]; then
+  echo "==> Initializing vendor/ghostty git submodule..."
+  git submodule update --init --depth 1
+fi
+
+# 2. Build prerequisites check
+if ! xcode-select -p >/dev/null 2>&1; then
+  echo "Error: Xcode Command Line Tools are required. Run: xcode-select --install" >&2
+  exit 1
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Error: Rust (1.95.0+) is required. Install via:" >&2
+  echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
+  exit 1
+fi
+if ! command -v "${ZIG:-zig}" >/dev/null 2>&1; then
+  echo "Error: Zig 0.16.0 is required to compile libghostty-vt." >&2
+  echo "  Install Zig 0.16.0 (or set ZIG=/path/to/zig) and re-run ./scripts/install-macos" >&2
+  exit 1
+fi
+
+# 3. Ensure herdr-core (`hc`) background terminal engine is available
+mkdir -p "$HOME/.local/bin"
+if ! command -v hc >/dev/null 2>&1 && [[ ${SKIP_CORE_INSTALL:-0} != 1 ]]; then
+  echo "==> Installing herdr-core (hc) background terminal engine..."
+  curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+fi
+
+# 4. Build Kestrel release binary
+echo "==> Building Kestrel (release)..."
+cargo build --release
+
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+app="$HOME/Applications/Kestrel.app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+# Replace atomically so installing does not interrupt a running Kestrel window.
+cp target/release/herdr-app "$app/Contents/MacOS/Kestrel.new"
+mv -f "$app/Contents/MacOS/Kestrel.new" "$app/Contents/MacOS/Kestrel"
+chmod +x "$app/Contents/MacOS/Kestrel"
+cp assets/icons/Kestrel.icns "$app/Contents/Resources/Kestrel.icns"
+cp LICENSE NOTICE THIRD-PARTY-NOTICES "$app/Contents/Resources/"
+
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleExecutable</key><string>Kestrel</string>
+    <key>CFBundleIdentifier</key><string>dev.kestrel.app</string>
+    <key>CFBundleName</key><string>Kestrel</string>
+    <key>CFBundleDisplayName</key><string>Kestrel</string>
+    <key>CFBundleIconFile</key><string>Kestrel</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>${version}</string>
+    <key>CFBundleVersion</key><string>${version}</string>
+    <key>NSHumanReadableCopyright</key><string>Copyright 2026 Kestrel Contributors. Derived from Herdr (Apache-2.0).</string>
+    <key>NSMicrophoneUsageDescription</key><string>Terminal programs running in Kestrel can use the microphone, for example for voice input.</string>
+    <key>NSCameraUsageDescription</key><string>Terminal programs running in Kestrel can use the camera.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Terminal programs running in Kestrel can use AppleScript to control other apps.</string>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>LSEnvironment</key><dict/></dict></plist>
+PLIST
+# Finder does not inherit a login shell's PATH; include standard local tool locations without baking full shell PATH.
+/usr/libexec/PlistBuddy -c "Add :LSEnvironment:PATH string $HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$app/Contents/Info.plist"
+codesign --force --sign - "$app"
+
+ln -sfn "$app/Contents/MacOS/Kestrel" "$HOME/.local/bin/kestrel"
+ln -sfn "$app/Contents/MacOS/Kestrel" "$HOME/.local/bin/herdr-app"
+if command -v hc >/dev/null 2>&1; then
+  ln -sfn "$(command -v hc)" "$HOME/.local/bin/kc"
+fi
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
+
+echo ""
+echo "Installed $app (v${version})."
+echo "  App: open -a \"$app\""
+echo "  CLI: ~/.local/bin/kestrel  (and ~/.local/bin/kc -> hc)"

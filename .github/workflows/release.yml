@@ -1,0 +1,121 @@
+# Modified by Kestrel Contributors (2026) from upstream Herdr (herdr-app, Apache-2.0). See NOTICE.
+#
+# Builds Kestrel.app, packages Kestrel-<version>-macos-arm64.dmg + .zip + SHA256SUMS.txt,
+# and publishes a GitHub Release automatically whenever a `v*` tag (e.g. `v0.2.0`) is pushed.
+# Also supports manual dry-run builds via Actions -> Run workflow (`workflow_dispatch`).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  ZIG_VERSION: 0.16.0
+  IS_TAG: ${{ github.ref_type == 'tag' }}
+
+jobs:
+  macos-release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Restore build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: kestrel-release-v1-macos-aarch64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            kestrel-release-v1-macos-aarch64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock') }}-
+            kestrel-release-v1-macos-aarch64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Verify Cargo.toml version matches git tag
+        if: env.IS_TAG == 'true'
+        run: |
+          want="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "$want" = "$GITHUB_REF_NAME" ] || { echo "Tag is $GITHUB_REF_NAME but Cargo.toml version is $want"; exit 1; }
+      - name: Build Kestrel.app & zip archive
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: ./scripts/package
+      - name: Build Kestrel.dmg installer
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          ./scripts/mac-dmg dist/Kestrel.app "dist/Kestrel-${version}-macos-arm64.dmg"
+          (
+            cd dist
+            shasum -a 256 "Kestrel-${version}-macos-arm64.dmg" "Kestrel-${version}-macos-arm64.zip" "kestrel-macos-aarch64.tar.gz" > SHA256SUMS.txt
+          )
+          cat dist/SHA256SUMS.txt
+      - name: Save build cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *cache-paths
+          key: kestrel-release-v1-macos-aarch64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kestrel-macos-arm64
+          path: |
+            dist/Kestrel-*-macos-arm64.dmg
+            dist/Kestrel-*-macos-arm64.zip
+            dist/kestrel-macos-aarch64.tar.gz
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish GitHub Release
+        if: env.IS_TAG == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          python3 - "$version" <<'PY' > dist/release-notes.md
+          import pathlib, re, sys
+          ver = sys.argv[1]
+          changelog = pathlib.Path("CHANGELOG.md").read_text()
+          m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog, re.M | re.S)
+          body = m.group(1).strip() if m else f"Kestrel {ver}"
+          print(body)
+          print("\n---\n### First-Time macOS Launch Note")
+          print("1. Open `Kestrel-" + ver + "-macos-arm64.dmg` and drag **Kestrel.app** into **Applications**.")
+          print("2. If built without an Apple Developer ID certificate (ad-hoc signed), clear macOS Gatekeeper quarantine once before opening:")
+          print("   ```sh\n   xattr -cr /Applications/Kestrel.app\n   open -a /Applications/Kestrel.app\n   ```")
+          print("3. On first launch, Kestrel offers a 1-click **Install it for me** button if `herdr-core` (`hc`) isn't installed yet.")
+          PY
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/Kestrel-${version}-macos-arm64.dmg" \
+            "dist/Kestrel-${version}-macos-arm64.zip" \
+            "dist/kestrel-macos-aarch64.tar.gz" \
+            "dist/SHA256SUMS.txt" \
+            --title "Kestrel ${GITHUB_REF_NAME}" \
+            --notes-file dist/release-notes.md

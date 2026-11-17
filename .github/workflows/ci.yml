@@ -1,0 +1,120 @@
+# Modified by Kestrel Contributors (2026) from upstream Herdr (herdr-app, Apache-2.0). See NOTICE.
+# Build and test Kestrel on push and pull requests.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  ZIG_VERSION: 0.16.0
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  CARGO_INCREMENTAL: "0"
+  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+
+jobs:
+  platform-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-aarch64, runner: macos-15 }
+          - { platform: linux-x86_64, runner: ubuntu-22.04 }
+          - { platform: windows-x86_64, runner: windows-2022 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: kestrel-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'vendor/**', 'crates/**', '.github/workflows/ci.yml') }}
+          restore-keys: kestrel-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
+      - name: Windows build dependencies
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+      - name: Verify Apache-2.0 attribution files exist
+        run: |
+          for f in LICENSE NOTICE THIRD-PARTY-NOTICES; do
+            test -s "$f" || { echo "Missing or empty $f"; exit 1; }
+          done
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --no-run
+      - name: Note the sources the cache was built from
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: scripts/ci-sources record
+      - name: Save build cache
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *cache-paths
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Run unit, render & notice tests
+        run: |
+          only=()
+          if [ "$RUNNER_OS" != Linux ]; then
+            for t in tests/*.rs; do
+              name=$(basename "$t" .rs)
+              [ "$name" = shot_pixels ] || only+=(--test "$name")
+            done
+            only+=(--bins)
+          fi
+          threads=()
+          if [ "$RUNNER_OS" = Linux ]; then
+            threads=(-- --test-threads 4)
+          fi
+          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${only[@]}" "${threads[@]}"
+      - name: Screenshot pixels (macOS native renderer)
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        env:
+          HERDR_SHOT_NATIVE_TEST: "1"
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
+
+  test:
+    needs: platform-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.platform-tests.result }}" = success ]'
