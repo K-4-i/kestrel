@@ -38,10 +38,11 @@ jobs:
         env:
           GITLEAKS_VERSION: "8.24.2"
         run: |
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" -o "/tmp/${archive}"
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
-            | grep " gitleaks_${GITLEAKS_VERSION}_linux_x64\.tar\.gz$" | (cd /tmp && sha256sum -c -)
-          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+            | grep -F " ${archive}" | (cd /tmp && sha256sum -c -)
+          tar -xzf "/tmp/${archive}" -C /tmp gitleaks
           cat > /tmp/gitleaks.toml <<'EOF'
           [extend]
           useDefault = true
