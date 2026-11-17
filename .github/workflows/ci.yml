@@ -23,6 +23,52 @@ env:
   SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
 
 jobs:
+  repo-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan git history with gitleaks
+        env:
+          GITLEAKS_VERSION: "8.24.2"
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+            | grep " gitleaks_${GITLEAKS_VERSION}_linux_x64\.tar\.gz$" | (cd /tmp && sha256sum -c -)
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          cat > /tmp/gitleaks.toml <<'EOF'
+          [extend]
+          useDefault = true
+          [allowlist]
+          paths = [
+            '''^THIRD-PARTY-NOTICES$''',
+            '''^Cargo\.lock$''',
+            '''^vendor/''',
+          ]
+          EOF
+          /tmp/gitleaks git --no-banner --redact --verbose --config=/tmp/gitleaks.toml .
+      - name: Check tracked files for credentials and hardcoded home paths
+        run: |
+          if git ls-files | grep -E -i '(^|/)(\.env(\..*)?|.*\.(pem|key|p12|pfx|p8|jks)|.*(service-account|credentials).*\.json)$'; then
+            echo "Forbidden credential or private-key file tracked in repository" >&2
+            exit 1
+          fi
+          if git grep -I -E '(@[a-z0-9-]+\.iam\.[g]serviceaccount\.com|-----BEGIN (RSA |EC |OPENSSH |DSA |ENCRYPTED )?[P]RIVATE KEY-----|"type"[[:space:]]*:[[:space:]]*"[s]ervice_account")' -- ':!vendor/**' ':!Cargo.lock' ':!THIRD-PARTY-NOTICES' ':!.github/workflows/ci.yml'; then
+            echo "Forbidden service-account or private-key material found" >&2
+            exit 1
+          fi
+          if git grep -I -E '(^|[^A-Za-z0-9_}$])/(Users|home)/[A-Za-z0-9._-]+' -- ':!vendor/**' ':!Cargo.lock' ':!THIRD-PARTY-NOTICES' ':!.github/workflows/ci.yml' \
+            | grep -v -E '/(Users|home)/(test|user|me|can|ghostty\.user|x)([^A-Za-z0-9._-]|$)'; then
+            echo "Hardcoded local home directory path found" >&2
+            exit 1
+          fi
+
   platform-tests:
     strategy:
       fail-fast: false
@@ -113,9 +159,9 @@ jobs:
         run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
 
   test:
-    needs: platform-tests
+    needs: [repo-hygiene, platform-tests]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: '[ "${{ needs.platform-tests.result }}" = success ]'
+      - run: '[ "${{ needs.repo-hygiene.result }}" = success ] && [ "${{ needs.platform-tests.result }}" = success ]'
