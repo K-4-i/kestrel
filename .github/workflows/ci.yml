@@ -62,6 +62,7 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 10
         run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $apt update
           sudo apt-get $apt install -y --no-install-recommends \
